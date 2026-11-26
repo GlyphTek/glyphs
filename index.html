@@ -150,6 +150,11 @@ pre{white-space:pre-wrap;margin:8px 0 0;padding:10px;background:rgba(2,8,16,.6);
   var TOKEN_SPIN = 1.5;      // how fast the glyph circles its orb (higher = faster)
   var ORB_GLOW = 0.55;       // glow around each orb (0 = none, 1 = strong)
   var HAZE = 0.45;           // background colour haze behind the clusters (0 = none)
+  // ---- TUNING: tokens that break away and float free ----
+  var FLOAT_GAP_MIN = 8, FLOAT_GAP_MAX = 10;   // seconds between releases, random per cluster
+  var FLOAT_STAGES = [2, 3, 4];                // how many tokens leave: first 2, then 3, then 4, then it starts again
+  var FLOAT_DIST_MIN = 1.2, FLOAT_DIST_MAX = 2.0;  // how far they drift, as a multiple of the cluster radius
+  var FLOAT_OUT = 1.6, FLOAT_HOLD_MIN = 2.5, FLOAT_HOLD_MAX = 3.5, FLOAT_BACK = 1.7;   // seconds: leave, float free, return
   var PULSE_GAP_MIN = 3, PULSE_GAP_MAX = 6, PULSE_HOPS = 5, PULSE_SECS = 0.3, PULSE_GLOW = 1;
 
   function slug(t) { return t.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""); }
@@ -167,7 +172,7 @@ pre{white-space:pre-wrap;margin:8px 0 0;padding:10px;background:rgba(2,8,16,.6);
     var at = 0;
     for (var c = 0; c < K; c++) {
       var n = DB.filter(function (x) { return x.c === c; }).length, cl = {
-        name: NAMES[c],
+        name: NAMES[c], stage: 0, nextRel: 3 + Math.random() * 7,
         id: c, hue: HUES[c], ids: [], hx: 0, hy: 0, ax: 0, ay: 0,
         fx: 0.045 + Math.random() * 0.04, fy: 0.04 + Math.random() * 0.04,
         px: Math.random() * 6.28, py: Math.random() * 6.28,
@@ -243,12 +248,38 @@ pre{white-space:pre-wrap;margin:8px 0 0;padding:10px;background:rgba(2,8,16,.6);
       var m = cl.R * 0.95; cl.cx = Math.max(m, Math.min(W - m, cl.cx)); cl.cy = Math.max(topH + m * 0.8, Math.min(H - botH - m * 0.8, cl.cy));
       var yaw = cl.yaw + cl.ys * CLUSTER_SPIN * T, tl = cl.tilt + 0.12 * sin(T * 0.15 + cl.px);
       var cy = cos(yaw), sy = sin(yaw), ct = cos(tl), st = sin(tl);
+      if (!reduce && T >= cl.nextRel) {
+        var free = cl.ids.filter(function (i) { return !toks[i].fly; }), want = Math.min(FLOAT_STAGES[cl.stage % FLOAT_STAGES.length], free.length);
+        for (var k = 0; k < want; k++) {
+          var pick1 = free.splice(Math.floor(Math.random() * free.length), 1)[0], tk = toks[pick1];
+          var ang = Math.atan2(tk.y - cl.cy, tk.x - cl.cx) + (Math.random() - 0.5) * 2.0, dist = cl.R * (FLOAT_DIST_MIN + Math.random() * (FLOAT_DIST_MAX - FLOAT_DIST_MIN));
+          tk.fly = { t: 0, dx: Math.cos(ang) * dist, dy: Math.sin(ang) * dist, hold: FLOAT_HOLD_MIN + Math.random() * (FLOAT_HOLD_MAX - FLOAT_HOLD_MIN),
+                     wa: 5 + Math.random() * 7, w1: 0.8 + Math.random() * 0.8, w2: 0.7 + Math.random() * 0.8, p1: Math.random() * 6.28, p2: Math.random() * 6.28 };
+        }
+        cl.stage++; cl.nextRel = T + FLOAT_GAP_MIN + Math.random() * (FLOAT_GAP_MAX - FLOAT_GAP_MIN);
+      }
       cl.ids.forEach(function (id) {
         var t = toks[id];
         var rx = t.lx * cy + t.lz * sy, rz = -t.lx * sy + t.lz * cy;
         var ry = t.ly * ct - rz * st, rz2 = t.ly * st + rz * ct;
         var p = 1 / (1 - rz2 * 0.28);
         t.x = cl.cx + rx * cl.R * p; t.y = cl.cy + ry * cl.R * p; t.s = p; t.z = rz2;
+        if (t.fly) {
+          var f = t.fly, u;
+          if (t !== hovered && t !== openTok) f.t += dt * ts;           // hover or an open card freezes a floating token
+          var a1 = FLOAT_OUT, a2 = FLOAT_OUT + f.hold, a3 = a2 + FLOAT_BACK;
+          if (f.t < a1) { var q = f.t / a1; u = 1 - (1 - q) * (1 - q) * (1 - q); }
+          else if (f.t < a2) u = 1 + 0.25 * ((f.t - a1) / f.hold);
+          else if (f.t < a3) { var z = (f.t - a2) / FLOAT_BACK; u = 1.25 * (1 - z * z * (3 - 2 * z)); }
+          else { t.fly = null; u = 0; }
+          if (u > 0) {
+            var wb = f.wa * Math.min(1, u);
+            t.x += f.dx * u + sin(f.t * f.w1 + f.p1) * wb; t.y += f.dy * u + cos(f.t * f.w2 + f.p2) * wb;
+            var mr = t.r * t.s + 10;
+            t.x = Math.max(mr, Math.min(W - mr, t.x)); t.y = Math.max(topH + mr, Math.min(H - botH - mr, t.y));
+            t.s *= 1 + 0.14 * Math.min(1, u); t.z += 0.6 * Math.min(1, u);
+          }
+        }
         if (!reduce) t.spin += dt * t.sv * TOKEN_SPIN * (0.35 + 0.65 * ts);
         var target = (t === hovered || t === openTok) ? 1 : 0;
         t.hv += (target - t.hv) * Math.min(1, dt * 8);
@@ -486,7 +517,7 @@ pre{white-space:pre-wrap;margin:8px 0 0;padding:10px;background:rgba(2,8,16,.6);
   }
   window.addEventListener("hashchange", function () { if (!openTok) hashOpen(); });
   layout();
-  window.__cg = { toks: toks, pick: pick, N: N, open: function () { return !!openTok; }, screen: function () { return toks.map(function (t) { return { x: t.x, y: t.y, title: t.node.title }; }); } };
+  window.__cg = { floating: function () { return toks.filter(function (t) { return t.fly; }).length; }, floaters: function () { return toks.filter(function (t) { return t.fly; }).map(function (t) { return { title: t.node.title, x: t.x, y: t.y, ft: t.fly.t }; }); }, toks: toks, pick: pick, N: N, open: function () { return !!openTok; }, screen: function () { return toks.map(function (t) { return { x: t.x, y: t.y, title: t.node.title }; }); } };
   var started = false;
   function go() { if (started) return; started = true; last = performance.now(); requestAnimationFrame(frame); hashOpen(); }
   var sample = DB.map(function (n) { return n.glyph; }).join("");
